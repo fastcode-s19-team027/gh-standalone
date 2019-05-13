@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{Result, Read, Write};
+use std::io::{Result, Read, Write, BufWriter};
 use std::collections::{HashSet, HashMap};
 use std::iter::FromIterator;
 
@@ -102,7 +102,7 @@ fn calc_final(user_repo_score: &Vec<Vec<(u32, u64)>>, repo_repo_score: &Vec<Vec<
 }
 
 fn write_output(final_score: &Vec<Vec<(u32, u64)>>, uid_list: &[String], rid_list: &[String]) -> Result<()> {
-    let mut file = fs::File::create("output")?;
+    let mut file = BufWriter::new(fs::File::create("output")?);
     for (uid, repo_score) in final_score.iter().enumerate() {
         file.write_fmt(format_args!("{}\t{:?}\n", uid_list[uid as usize], repo_score.iter().map(|&(rid, score)| (&rid_list[rid as usize], score)).collect::<Vec<_>>()))?;
     }
