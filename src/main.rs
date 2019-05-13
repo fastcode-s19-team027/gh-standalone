@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{Result, Read, Write};
+use std::io::{Result, Read, Write, BufWriter};
 use std::collections::{HashSet, HashMap};
 use std::iter::FromIterator;
 
@@ -57,10 +57,12 @@ fn compute_score(event_type: &str) -> u64 {
     }
 }
 
-fn calc_score(data: &[InputItem], uid_list: &[String], rid_list: &[String]) -> Vec<Vec<(u32, u64)>> {
-    let uid_map: HashMap<&String, u32> = HashMap::from_iter(uid_list.iter().enumerate().map(|(v, k)| (k, v as u32)));
-    let rid_map: HashMap<&String, u32> = HashMap::from_iter(rid_list.iter().enumerate().map(|(v, k)| (k, v as u32)));
-    let mut user_repo_score = vec![HashMap::new(); uid_list.len()];
+fn list_to_map(list: &[String]) -> HashMap<&String, u32> {
+    HashMap::from_iter(list.iter().enumerate().map(|(v, k)| (k, v as u32)))
+}
+
+fn calc_score(data: &[InputItem], uid_map: &HashMap<&String, u32>, rid_map: &HashMap<&String, u32>) -> Vec<Vec<(u32, u64)>> {
+    let mut user_repo_score = vec![HashMap::new(); uid_map.len()];
     for d in data {
         let uid = *uid_map.get(&d.user).unwrap();
         let rid = *rid_map.get(&d.repo).unwrap();
@@ -69,20 +71,30 @@ fn calc_score(data: &[InputItem], uid_list: &[String], rid_list: &[String]) -> V
     user_repo_score.into_iter().map(|hm| hm.into_iter().filter(|(_, score)| *score >= MIN_USER_RATING).collect()).collect()
 }
 
-fn calc_repo_repo(scores: &Vec<Vec<(u32, u64)>>, repo_len: usize) -> Vec<Vec<(u32, u64)>> {
-    let mut repo_repo_score = vec![HashMap::new(); repo_len];
-    for s in scores {
-        for &(repo1, score1) in s {
-            for &(repo2, score2) in s {
-                *repo_repo_score[repo1 as usize].entry(repo2).or_insert(0u64) += score1 * score2;
+fn calc_score_repo(data: &[InputItem], uid_map: &HashMap<&String, u32>, rid_map: &HashMap<&String, u32>) -> Vec<Vec<(u32, u64)>> {
+    let mut repo_user_score = vec![HashMap::new(); rid_map.len()];
+    for d in data {
+        let uid = *uid_map.get(&d.user).unwrap();
+        let rid = *rid_map.get(&d.repo).unwrap();
+        *repo_user_score[rid as usize].entry(uid).or_insert(0u64) += compute_score(&d.event_type);
+    }
+    repo_user_score.into_iter().map(|hm| hm.into_iter().filter(|(_, score)| *score >= MIN_USER_RATING).collect()).collect()
+}
+
+fn calc_repo_repo(user_repo_score: &Vec<Vec<(u32, u64)>>, repo_user_score: &Vec<Vec<(u32, u64)>>) -> Vec<Vec<(u32, u64)>> {
+    let mut final_score = vec![vec![]; repo_user_score.len()];
+    for (rid1, user_score) in repo_user_score.iter().enumerate() {
+        let mut fscore = HashMap::new();
+        for &(uid, score1) in user_score {
+            for &(rid2, score2) in &user_repo_score[uid as usize] {
+                *fscore.entry(rid2).or_insert(0u64) += score1 * score2;
             }
         }
+        let mut fscore_vec = Vec::from_iter(fscore);
+        fscore_vec.sort_by_key(|&(_, s)| std::cmp::Reverse(s));
+        final_score[rid1].append(&mut fscore_vec.into_iter().take(MAX_REL_REPO).collect());
     }
-    repo_repo_score.into_iter().map(|hm| {
-        let mut vec = Vec::from_iter(hm);
-        vec.sort_by_key(|&(_, s)| std::cmp::Reverse(s));
-        vec.into_iter().take(MAX_REL_REPO).collect()
-    }).collect()
+    final_score
 }
 
 fn calc_final(user_repo_score: &Vec<Vec<(u32, u64)>>, repo_repo_score: &Vec<Vec<(u32, u64)>>) -> Vec<Vec<(u32, u64)>> {
@@ -102,7 +114,7 @@ fn calc_final(user_repo_score: &Vec<Vec<(u32, u64)>>, repo_repo_score: &Vec<Vec<
 }
 
 fn write_output(final_score: &Vec<Vec<(u32, u64)>>, uid_list: &[String], rid_list: &[String]) -> Result<()> {
-    let mut file = fs::File::create("output")?;
+    let mut file = BufWriter::new(fs::File::create("output")?);
     for (uid, repo_score) in final_score.iter().enumerate() {
         file.write_fmt(format_args!("{}\t{:?}\n", uid_list[uid as usize], repo_score.iter().map(|&(rid, score)| (&rid_list[rid as usize], score)).collect::<Vec<_>>()))?;
     }
@@ -112,13 +124,19 @@ fn write_output(final_score: &Vec<Vec<(u32, u64)>>, uid_list: &[String], rid_lis
 fn main() {
     println!("load data");
     let data = load_data().unwrap();
-    println!("gen user => [(repo, score)]");
     let uid_list = gen_uid_list(&data);
     let rid_list = gen_rid_list(&data);
-    let user_repo_score = calc_score(&data, &uid_list, &rid_list);
+    let uid_map = list_to_map(&uid_list);
+    let rid_map = list_to_map(&rid_list);
+    println!("gen user => [(repo, score)]");
+    let user_repo_score = calc_score(&data, &uid_map, &rid_map);
+    println!("gen repo => [(user, score)]");
+    let repo_user_score = calc_score_repo(&data, &uid_map, &rid_map);
+    drop(uid_map);
+    drop(rid_map);
     drop(data);
     println!("gen repo => [(repo, score)]");
-    let repo_repo_score = calc_repo_repo(&user_repo_score, rid_list.len());
+    let repo_repo_score = calc_repo_repo(&user_repo_score, &repo_user_score);
     println!("gen final user => [(repo, score)]");
     let final_score = calc_final(&user_repo_score, &repo_repo_score);
     println!("output");
